@@ -41,7 +41,7 @@ interface LobbyCtx {
   version: number;
 }
 
-export type Toast = { id: string; kind: "challenge"; c: ChallengeView } | { id: string; kind: "note"; text: string };
+export type Toast = { id: string; kind: "challenge"; c: ChallengeView } | { id: string; kind: "note"; text: string } | { id: string; kind: "started"; gameId: string };
 
 const Ctx = createContext<LobbyCtx | null>(null);
 
@@ -111,12 +111,17 @@ export function LobbyProvider({ children }: { children: ReactNode }) {
             pendingSeek.current = null;
             setSeeking(null);
             break;
-          case "start":
+          case "start": {
             pendingSeek.current = null;
             setSeeking(null);
             sound.start();
-            navRef.current(`/game/${m.id}`);
+            // Never pull someone out of a game they are watching or playing; offer a link instead.
+            const p = location.pathname;
+            const busy = (p.startsWith("/game/") && p !== `/game/${m.id}`) || p === "/bot";
+            if (busy) pushToast({ id: `g${m.id}`, kind: "started", gameId: m.id });
+            else navRef.current(`/game/${m.id}`);
             break;
+          }
           case "error":
             pendingSeek.current = null;
             setSeeking(null);
