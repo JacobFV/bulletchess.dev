@@ -1,0 +1,38 @@
+// bulletchess.dev: one Worker serves the SPA (static assets), the API, and the Durable Objects.
+// Local development overrides the vars below with .dev.vars (see .dev.vars.example).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bulletchess",
+  "account_id": "20d4becc35c40a0bbfb8803a525aaae1",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "bulletchess.dev", "custom_domain": true },
+    { "pattern": "www.bulletchess.dev", "custom_domain": true }
+  ],
+  "observability": { "enabled": true },
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "APP_ORIGIN": "https://bulletchess.dev",
+    "EMAIL_FROM": "bulletchess <no-reply@mail.bulletchess.dev>",
+    "EMAIL_PROVIDER": "cloudflare"
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "bulletchess", "database_id": "c5df5539-a67a-4a2a-8002-7b16cb63891c", "migrations_dir": "migrations" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "LOBBY", "class_name": "Lobby" },
+      { "name": "GAME", "class_name": "GameRoom" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Lobby", "GameRoom"] }],
+  "send_email": [{ "name": "EMAIL" }]
+}
