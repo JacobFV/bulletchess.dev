@@ -145,7 +145,14 @@ async function play(game, moves) {
 
 async function main() {
   console.log(`e2e against ${BASE} (run ${run})`);
-  let done = step("sign up + verify two players");
+  let done = step("signed-out /api/me has the same shape as signed-in");
+  {
+    const r = await new Client("anon").req("/api/me");
+    assert.deepEqual(r.body, { user: null, ratings: {} });
+  }
+  done();
+
+  done = step("sign up + verify two players");
   const A = await signUpAndVerify(`a${run}`);
   const B = await signUpAndVerify(`b${run}`);
   done();

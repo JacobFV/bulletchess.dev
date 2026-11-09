@@ -12,7 +12,8 @@ export function MeProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const refresh = useCallback(async () => {
     try {
-      setMe(await api<Me>("/api/me"));
+      const r = await api<Partial<Me>>("/api/me");
+      setMe({ user: r.user ?? null, ratings: r.ratings ?? {} });
     } catch {
       setMe({ user: null, ratings: {} });
     }

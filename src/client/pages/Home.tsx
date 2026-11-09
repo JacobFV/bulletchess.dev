@@ -75,7 +75,7 @@ export function Home() {
         {POOLS.map((p) => {
           const active = seeking?.pool === p.id;
           const waiting = stats?.pools[p.id] ?? 0;
-          const r = me?.ratings[perfOf(p)];
+          const r = me?.ratings?.[perfOf(p)];
           return (
             <button key={p.id} className={`pool${active ? " active" : ""}`} onClick={() => seek(p.id)} aria-pressed={active}>
               <span className="pool-tc">{tcLabel(p)}</span>

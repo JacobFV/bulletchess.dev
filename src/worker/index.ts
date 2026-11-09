@@ -44,7 +44,7 @@ async function user(c: Context<AppEnv>): Promise<SessionUser | null> {
 
 app.get("/api/me", async (c) => {
   const u = await user(c);
-  if (!u) return c.json({ user: null });
+  if (!u) return c.json({ user: null, ratings: {} });
   const { results } = await c.env.DB.prepare(`SELECT perf, rating, rd, games FROM ratings WHERE user_id = ?1`).bind(u.id).all<{ perf: string; rating: number; rd: number; games: number }>();
   return c.json({
     user: { id: u.id, username: u.username, email: u.email },
