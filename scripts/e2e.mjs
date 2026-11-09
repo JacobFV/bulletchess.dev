@@ -66,7 +66,10 @@ class Client {
     });
     const opened = new Promise((res, rej) => {
       sock.addEventListener("open", res, { once: true });
-      sock.addEventListener("error", rej, { once: true });
+      sock.addEventListener("error", async () => {
+        const r = await fetch(BASE + path, { headers: { Cookie: this.cookieHeader(), Upgrade: "websocket" } }).catch((e) => ({ status: String(e) }));
+        rej(new Error(`WebSocket ${path} failed to open (plain GET status ${r.status})`));
+      }, { once: true });
     });
     return {
       sock,
