@@ -12,4 +12,6 @@ export interface Env {
   GAME: DurableObjectNamespace<GameRoom>;
   ASSETS: Fetcher;
   EMAIL?: SendEmail;
+  /** development only: minimum scheduling lead time (ms) for tests. */
+  DEV_SCHEDULE_MIN_LEAD_MS?: string;
 }

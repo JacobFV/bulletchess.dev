@@ -58,6 +58,7 @@ export interface GameView {
   you: Color | null;
   online: { white: boolean; black: boolean };
   spectators: number;
+  source: GameSource;
   /** Challenge: creator's preferred color (for the waiting screen). */
   creatorColor?: "white" | "black" | "random";
 }
@@ -86,6 +87,44 @@ export type ServerGameMsg =
   | { t: "ping"; s: number }
   | { t: "error"; message: string };
 
+export type GameSource = "pool" | "challenge" | "rematch" | "direct" | "open" | "scheduled";
+
+export interface ChallengeUser {
+  id: string;
+  username: string;
+  rating: number;
+  provisional: boolean;
+}
+
+export interface ChallengeView {
+  id: string;
+  from: ChallengeUser;
+  /** null: open to anyone. */
+  to: ChallengeUser | null;
+  acceptedBy: ChallengeUser | null;
+  base: number;
+  inc: number;
+  rated: boolean;
+  /** The challenger's color. */
+  color: "white" | "black" | "random";
+  status: "pending" | "accepted" | "started" | "declined" | "cancelled" | "expired";
+  /** null: on demand (starts as soon as it is accepted). */
+  scheduledAt: number | null;
+  expiresAt: number;
+  gameId: string | null;
+  createdAt: number;
+}
+
+export interface OnlinePlayer {
+  id: string;
+  username: string;
+  rating: number;
+  provisional: boolean;
+  status: "idle" | "seeking" | "playing";
+  gameId: string | null;
+  acceptsChallenges: boolean;
+}
+
 export type ClientLobbyMsg = { t: "seek"; pool: PoolId } | { t: "cancel" } | { t: "ping" };
 export type ServerLobbyMsg =
   | { t: "hello"; players: number; games: number; pools: Record<string, number> }
@@ -94,7 +133,11 @@ export type ServerLobbyMsg =
   | { t: "cancelled" }
   | { t: "start"; id: string }
   | { t: "error"; message: string }
-  | { t: "pong" };
+  | { t: "pong" }
+  /** A new incoming challenge (show a notification). */
+  | { t: "challenge"; c: ChallengeView }
+  /** Something about your challenges changed; refetch. `note` is a short human message. */
+  | { t: "challenges"; note?: string };
 
 export interface LiveGame {
   id: string;

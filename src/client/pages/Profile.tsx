@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
+import { ChallengeDialog } from "../components/ChallengeDialog";
 import { PERF_LABEL, PERFS, type Perf } from "../../shared/tc";
 import { GameRow, type GameSummary } from "../components/GameRow";
 import { api } from "../lib/api";
@@ -7,7 +8,7 @@ import { timeAgo } from "../lib/format";
 import { useMe } from "../lib/me";
 
 interface ProfileData {
-  user: { id: string; username: string; createdAt: number };
+  user: { id: string; username: string; createdAt: number; online: boolean; acceptsChallenges: boolean };
   ratings: Partial<Record<Perf, { rating: number; rd: number; provisional: boolean; games: number; wins: number; losses: number; draws: number; best: number | null; lastPlayedAt: number | null }>>;
   totals: { games: number; wins: number | null; losses: number | null; draws: number | null; bot: number | null };
 }
@@ -21,6 +22,8 @@ export function Profile() {
   const [next, setNext] = useState<number | null>(null);
   const [perf, setPerf] = useState<Perf>("bullet");
   const [history, setHistory] = useState<[number, number][]>([]);
+  const [dialog, setDialog] = useState(false);
+  const nav = useNavigate();
 
   useEffect(() => {
     setP(null);
@@ -71,16 +74,24 @@ export function Profile() {
           {p.user.username[0]!.toUpperCase()}
         </div>
         <div>
-          <h1>{p.user.username}</h1>
+          <h1>
+            {p.user.username} <span className={`dot${p.user.online ? " on" : ""}`} title={p.user.online ? "Online" : "Offline"} />
+          </h1>
           <div className="muted">
             Joined {new Date(p.user.createdAt).toLocaleDateString(undefined, { year: "numeric", month: "long" })} · {p.totals.games} games
             {p.totals.bot ? ` (${p.totals.bot} vs computer)` : ""}
           </div>
         </div>
-        {isMe && (
+        {isMe ? (
           <Link className="btn small" to="/settings">
             Settings
           </Link>
+        ) : p.user.acceptsChallenges ? (
+          <button className="btn primary" onClick={() => (me?.user ? setDialog(true) : nav(`/signin?next=${encodeURIComponent(location.pathname)}`))}>
+            Challenge {p.user.online ? "now" : ""}
+          </button>
+        ) : (
+          <span className="muted small">Not accepting challenges</span>
         )}
       </header>
 
@@ -128,6 +139,7 @@ export function Profile() {
           </button>
         )}
       </section>
+      {dialog && <ChallengeDialog to={p.user.username} onClose={() => setDialog(false)} />}
     </div>
   );
 }

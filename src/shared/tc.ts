@@ -52,7 +52,18 @@ export function tcLabel(tc: TimeControl): string {
   return `${base}+${tc.inc}`;
 }
 
-/** Time allowed for each side to make its first move before the game is aborted. */
-export function firstMoveMs(tc: TimeControl): number {
+/**
+ * Time allowed for each side to make its first move before the game is aborted.
+ * Scheduled games start without both players necessarily watching, so they get three minutes.
+ */
+export function firstMoveMs(tc: TimeControl & { source?: string }): number {
+  if (tc.source === "scheduled") return 180_000;
   return Math.max(10_000, Math.min(20_000, tc.base * 1000));
 }
+
+/** Scheduling limits. */
+export const SCHEDULE_MIN_LEAD_MS = 2 * 60_000;
+export const SCHEDULE_MAX_LEAD_MS = 30 * 86_400_000;
+/** How long an on-demand challenge stays open. */
+export const DIRECT_CHALLENGE_TTL_MS = 2 * 60_000;
+export const OPEN_CHALLENGE_TTL_MS = 10 * 60_000;

@@ -56,6 +56,7 @@ class Client {
     const url = BASE.replace(/^http/, "ws") + path;
     const sock = new WebSocket(url, { headers: { Cookie: this.cookieHeader(), Origin: ORIGIN } });
     const queue = [];
+    if (process.env.E2E_DEBUG) sock.addEventListener("close", (e) => console.log(`\n[ws close] ${this.name} ${path} code=${e.code} reason=${e.reason} t=${new Date().toISOString()}`));
     const waiters = [];
     sock.addEventListener("message", (e) => {
       const m = JSON.parse(e.data);
@@ -79,8 +80,12 @@ class Client {
         const i = queue.findIndex(pred);
         if (i >= 0) return Promise.resolve(queue.splice(i, 1)[0]);
         return new Promise((resolve, reject) => {
-          const t = setTimeout(() => reject(new Error(`${this.name ?? "ws"} timed out waiting`)), timeout);
-          waiters.push({ pred, resolve: (m) => (clearTimeout(t), resolve(m)) });
+          const w = { pred, resolve: (m) => (clearTimeout(t), resolve(m)) };
+          const t = setTimeout(() => {
+            waiters.splice(waiters.indexOf(w), 1);
+            reject(new Error(`${path}: timed out waiting for ${pred.toString().slice(0, 80)}`));
+          }, timeout);
+          waiters.push(w);
         });
       },
       close: () => sock.close(),
@@ -160,12 +165,13 @@ async function main() {
   }
   done();
 
-  done = step("matchmaking pairs both players in the 1+0 pool");
   const la = A.ws("/api/lobby/ws");
   const lb = B.ws("/api/lobby/ws");
   await Promise.all([la.opened, lb.opened]);
   await la.next((m) => m.t === "hello");
   await lb.next((m) => m.t === "hello");
+  if (!process.env.E2E_ONLY_CHALLENGES) {
+  done = step("matchmaking pairs both players in the 1+0 pool");
   la.send({ t: "seek", pool: "1+0" });
   await la.next((m) => m.t === "seeking");
   lb.send({ t: "seek", pool: "1+0" });
@@ -341,6 +347,166 @@ async function main() {
   }
   done();
 
+  } // end of game section
+  // ------------------------------------------------------------ presence & challenges
+  // Lobby sockets la/lb are still open for A and B.
+  const C = await signUpAndVerify(`c${run}`);
+  const lc = C.ws("/api/lobby/ws");
+  await lc.opened;
+  await lc.next((m) => m.t === "hello");
+
+  done = step("online players list shows signed-in players with status");
+  {
+    const r = await A.req("/api/players/online");
+    const names = r.body.players.map((p) => p.username);
+    for (const n of [A.name, B.name, C.name]) assert.ok(names.includes(n), `${n} online`);
+    assert.ok(r.body.players.every((p) => ["idle", "seeking", "playing"].includes(p.status)));
+    const prof = await A.req(`/api/users/${B.name}`);
+    assert.equal(prof.body.user.online, true);
+  }
+  done();
+
+  done = step("direct on-demand challenge: notification, accept, game starts for both");
+  let directGame;
+  {
+    const r = await A.req("/api/challenges", { method: "POST", json: { mode: "direct", to: B.name, base: 60, inc: 1, rated: true, color: "white" } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const note = await lb.next((m) => m.t === "challenge");
+    assert.equal(note.c.from.username, A.name);
+    assert.equal(note.c.scheduledAt, null);
+    const inbox = await B.req("/api/challenges");
+    assert.equal(inbox.body.incoming[0].id, note.c.id);
+    assert.equal((await C.req(`/api/challenges/${note.c.id}/accept`, { method: "POST", json: {} })).status, 403, "third party cannot accept");
+    const acc = await B.req(`/api/challenges/${note.c.id}/accept`, { method: "POST", json: {} });
+    assert.equal(acc.status, 200, JSON.stringify(acc.body));
+    const [sa2, sb2] = await Promise.all([la.next((m) => m.t === "start"), lb.next((m) => m.t === "start")]);
+    assert.equal(sa2.id, acc.body.gameId);
+    assert.equal(sb2.id, acc.body.gameId);
+    directGame = acc.body.gameId;
+    const g = await A.req(`/api/games/${directGame}`);
+    assert.equal(g.body.live.white.username, A.name, "challenger chose white");
+    assert.equal(g.body.live.source, "direct");
+    assert.equal(g.body.live.inc, 1);
+    const online = await C.req("/api/players/online");
+    assert.equal(online.body.players.find((p) => p.username === A.name).status, "playing");
+    assert.equal((await B.req(`/api/challenges/${note.c.id}/accept`, { method: "POST", json: {} })).status, 410, "cannot accept twice");
+    const w = A.ws(`/api/games/${directGame}/ws`);
+    await w.opened;
+    await w.next((m) => m.t === "state");
+    w.send({ t: "abort" });
+    await w.next((m) => m.t === "end");
+    w.close();
+  }
+  done();
+
+  done = step("decline notifies the challenger; cancel removes it from the inbox");
+  {
+    let r = await A.req("/api/challenges", { method: "POST", json: { mode: "direct", to: C.name, base: 30, inc: 0, rated: false, color: "random" } });
+    const id = r.body.challenge.id;
+    await lc.next((m) => m.t === "challenge" && m.c.id === id);
+    await C.req(`/api/challenges/${id}/decline`, { method: "POST", json: {} });
+    const n = await la.next((m) => m.t === "challenges" && m.note?.includes("declined"));
+    assert.match(n.note, new RegExp(C.name));
+    r = await A.req("/api/challenges", { method: "POST", json: { mode: "direct", to: C.name, base: 30, inc: 0, rated: false, color: "random" } });
+    const id2 = r.body.challenge.id;
+    await lc.next((m) => m.t === "challenge" && m.c.id === id2);
+    await A.req(`/api/challenges/${id2}/cancel`, { method: "POST", json: {} });
+    await lc.next((m) => m.t === "challenges");
+    assert.equal((await C.req("/api/challenges")).body.incoming.length, 0);
+  }
+  done();
+
+  done = step("open on-demand challenge: listed publicly, first accept wins");
+  {
+    const r = await B.req("/api/challenges", { method: "POST", json: { mode: "open", base: 120, inc: 1, rated: true, color: "black" } });
+    const id = r.body.challenge.id;
+    const list = await new Client("anon").req("/api/challenges/open");
+    assert.ok(list.body.challenges.some((x) => x.id === id && x.to === null));
+    assert.equal((await B.req(`/api/challenges/${id}/accept`, { method: "POST", json: {} })).status, 400, "cannot accept own");
+    const [r1, r2] = await Promise.all([C.req(`/api/challenges/${id}/accept`, { method: "POST", json: {} }), A.req(`/api/challenges/${id}/accept`, { method: "POST", json: {} })]);
+    const winners = [r1, r2].filter((x) => x.status === 200);
+    assert.equal(winners.length, 1, `exactly one winner: ${r1.status} ${r2.status}`);
+    assert.ok([r1, r2].some((x) => x.status === 409 || x.status === 410));
+    const gid2 = winners[0].body.gameId;
+    const g = await B.req(`/api/games/${gid2}`);
+    assert.equal(g.body.live.black.username, B.name);
+    assert.equal(g.body.live.source, "open");
+    const w = B.ws(`/api/games/${gid2}/ws`);
+    await w.opened;
+    await w.next((m) => m.t === "state");
+    w.send({ t: "abort" });
+    await w.next((m) => m.t === "end");
+    w.close();
+  }
+  done();
+
+  done = step("scheduled challenge to a player: accept ahead, game starts on time for both");
+  {
+    const at = Date.now() + 8000;
+    const r = await A.req("/api/challenges", { method: "POST", json: { mode: "direct", to: C.name, base: 60, inc: 0, rated: true, color: "black", scheduledAt: at } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const id = r.body.challenge.id;
+    const n = await lc.next((m) => m.t === "challenge" && m.c.id === id);
+    assert.equal(n.c.scheduledAt, at);
+    const acc = await C.req(`/api/challenges/${id}/accept`, { method: "POST", json: {} });
+    assert.equal(acc.status, 200, JSON.stringify(acc.body));
+    assert.equal(acc.body.scheduledAt, at);
+    const up = await A.req("/api/challenges");
+    assert.ok(up.body.upcoming.some((x) => x.id === id && x.acceptedBy?.username === C.name));
+    // Only count starts that arrive around the scheduled time (earlier steps may have left some queued).
+    const fresh = (m) => m.t === "start" && Date.now() >= at - 1000;
+    const s2 = await lc.next(fresh, 20_000);
+    const lateness = Date.now() - at;
+    const s1 = await la.next((m) => fresh(m) && m.id === s2.id, 5_000);
+    assert.equal(s1.id, s2.id);
+    assert.ok(lateness > -500 && lateness < 3000, `started ${lateness} ms after the scheduled time`);
+    const g = await C.req(`/api/games/${s1.id}`);
+    assert.equal(g.body.live.source, "scheduled");
+    assert.equal(g.body.live.white.username, C.name);
+    assert.ok(g.body.live.firstMoveDeadline - g.body.live.serverNow > 170_000, "scheduled games allow 3 minutes for the first move");
+    const mine = await A.req("/api/challenges");
+    assert.ok(mine.body.started.some((x) => x.id === id && x.gameId === s1.id));
+    const w = C.ws(`/api/games/${s1.id}/ws`);
+    await w.opened;
+    await w.next((m) => m.t === "state");
+    w.send({ t: "abort" });
+    await w.next((m) => m.t === "end");
+    w.close();
+  }
+  done();
+
+  done = step("scheduled open challenge: accept then withdraw reopens it; creator cancels");
+  {
+    const r = await B.req("/api/challenges", { method: "POST", json: { mode: "open", base: 60, inc: 0, rated: false, color: "random", scheduledAt: Date.now() + 3600_000 } });
+    const id = r.body.challenge.id;
+    assert.equal((await C.req(`/api/challenges/${id}/accept`, { method: "POST", json: {} })).status, 200);
+    let open = await C.req("/api/challenges/open");
+    assert.ok(!open.body.challenges.some((x) => x.id === id), "accepted ones leave the open list");
+    assert.equal((await C.req(`/api/challenges/${id}/decline`, { method: "POST", json: {} })).status, 200);
+    open = await C.req("/api/challenges/open");
+    assert.ok(open.body.challenges.some((x) => x.id === id), "withdrawal reopens it");
+    assert.equal((await B.req(`/api/challenges/${id}/cancel`, { method: "POST", json: {} })).status, 200);
+    open = await C.req("/api/challenges/open");
+    assert.ok(!open.body.challenges.some((x) => x.id === id));
+  }
+  done();
+
+  done = step("validation: self-challenge, unknown player, bad schedule, opt-out");
+  {
+    assert.equal((await A.req("/api/challenges", { method: "POST", json: { mode: "direct", to: A.name, base: 60, inc: 0, rated: true, color: "white" } })).status, 400);
+    assert.equal((await A.req("/api/challenges", { method: "POST", json: { mode: "direct", to: "nobody-here-xyz", base: 60, inc: 0, rated: true, color: "white" } })).status, 404);
+    assert.equal((await A.req("/api/challenges", { method: "POST", json: { mode: "open", base: 60, inc: 0, rated: true, color: "white", scheduledAt: Date.now() - 1000 } })).status, 400);
+    assert.equal((await A.req("/api/challenges", { method: "POST", json: { mode: "open", base: 600, inc: 0, rated: true, color: "white" } })).status, 400);
+    assert.equal((await C.req("/api/me/prefs", { method: "POST", json: { challenges: "nobody" } })).status, 200);
+    const r = await A.req("/api/challenges", { method: "POST", json: { mode: "direct", to: C.name, base: 60, inc: 0, rated: true, color: "white" } });
+    assert.equal(r.status, 403);
+    const online = await A.req("/api/players/online");
+    assert.equal(online.body.players.find((p) => p.username === C.name).acceptsChallenges, false);
+    await C.req("/api/me/prefs", { method: "POST", json: { challenges: "everyone" } });
+  }
+  done();
+
+  lc.close();
   la.close();
   lb.close();
   console.log(`\n${passed} checks passed.`);

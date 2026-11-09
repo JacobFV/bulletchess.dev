@@ -5,8 +5,10 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import type { CoreState } from "../shared/core";
-import type { ClientLobbyMsg, LiveGame, ServerLobbyMsg } from "../shared/protocol";
+import { isProvisional } from "../shared/glicko";
+import type { ClientLobbyMsg, LiveGame, OnlinePlayer, ServerLobbyMsg } from "../shared/protocol";
 import { perfOf, poolById, POOLS, type PoolId } from "../shared/tc";
+import { acceptsChallenges, emailStarted, launchGame, parties, type ChallengeRow } from "./challenges";
 import { loadRating, playerInfo, recordResult } from "./db";
 import type { Env } from "./env";
 import { randomId } from "./ids";
@@ -21,6 +23,10 @@ interface Attachment {
   uid: string | null;
   username: string | null;
   seek: Seek | null;
+  /** Bullet rating at connect time, for the online-players list. */
+  rating?: number;
+  provisional?: boolean;
+  accepts?: boolean;
 }
 type Seeker = { ws: WebSocket; att: Attachment & { seek: Seek } };
 export type { LiveGame };
@@ -38,7 +44,12 @@ export class Lobby extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     this.ctx.acceptWebSocket(server, uid ? [`u:${uid}`] : []);
-    server.serializeAttachment({ uid, username, seek: null } satisfies Attachment);
+    const att: Attachment = { uid, username, seek: null };
+    if (uid) {
+      const [r, accepts] = await Promise.all([loadRating(this.env.DB, uid, "bullet", Date.now()), acceptsChallenges(this.env.DB, uid)]);
+      Object.assign(att, { rating: Math.round(r.rating), provisional: isProvisional(r), accepts });
+    }
+    server.serializeAttachment(att);
     server.send(JSON.stringify({ t: "hello", ...this.stats() } satisfies ServerLobbyMsg));
     await this.ensureAlarm(5000);
     return new Response(null, { status: 101, webSocket: client });
@@ -93,18 +104,135 @@ export class Lobby extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    await this.pair();
-    const s = JSON.stringify(this.stats());
-    if (s !== this.lastStats) {
-      this.lastStats = s;
-      const msg = JSON.stringify({ t: "stats", ...this.stats() } satisfies ServerLobbyMsg);
-      for (const ws of this.ctx.getWebSockets()) trySend(ws, msg);
+    try {
+      await this.startDueSchedules();
+      await this.pair();
+      const s = JSON.stringify(this.stats());
+      if (s !== this.lastStats) {
+        this.lastStats = s;
+        const msg = JSON.stringify({ t: "stats", ...this.stats() } satisfies ServerLobbyMsg);
+        for (const ws of this.ctx.getWebSockets()) trySend(ws, msg);
+      }
+      this.sweepActive();
+    } catch (e) {
+      console.error("lobby alarm failed", e);
+    } finally {
+      // Always re-arm: a failed pass must never stop matchmaking or scheduled starts.
+      await this.rearm();
     }
-    this.sweepActive();
-    const seeking = this.seekers().length > 0;
-    const sockets = this.ctx.getWebSockets().length > 0;
-    if (seeking) await this.ctx.storage.setAlarm(Date.now() + 1000);
-    else if (sockets) await this.ctx.storage.setAlarm(Date.now() + 4000);
+  }
+
+  private async rearm() {
+    const now = Date.now();
+    const candidates: number[] = [];
+    if (this.seekers().length > 0) candidates.push(now + 1000);
+    else if (this.ctx.getWebSockets().length > 0) candidates.push(now + 4000);
+    const sched = this.nextSchedule();
+    if (sched !== null) candidates.push(Math.max(now + 50, sched));
+    if (candidates.length) await this.ctx.storage.setAlarm(Math.min(...candidates));
+  }
+
+  // ---------------------------------------------------------------- presence & notifications
+
+  onlinePlayers(limit = 300): OnlinePlayer[] {
+    const byUid = new Map<string, OnlinePlayer>();
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      const a = ws.deserializeAttachment() as Attachment | null;
+      if (!a?.uid || !a.username) continue;
+      const cur = byUid.get(a.uid);
+      const gameId = this.ctx.storage.kv.get<string>(`u:${a.uid}`) ?? null;
+      const p: OnlinePlayer = cur ?? {
+        id: a.uid,
+        username: a.username,
+        rating: a.rating ?? 1500,
+        provisional: a.provisional ?? true,
+        status: gameId ? "playing" : "idle",
+        gameId,
+        acceptsChallenges: a.accepts ?? true,
+      };
+      if (a.seek && p.status === "idle") p.status = "seeking";
+      byUid.set(a.uid, p);
+    }
+    return [...byUid.values()].sort((x, y) => y.rating - x.rating).slice(0, limit);
+  }
+
+  isOnline(uid: string): boolean {
+    return this.ctx.getWebSockets(`u:${uid}`).some((ws) => ws.readyState === WebSocket.OPEN);
+  }
+
+  /** Push a message to every open lobby socket of the given users. */
+  notify(uids: string[], msg: ServerLobbyMsg): void {
+    const s = JSON.stringify(msg);
+    for (const uid of new Set(uids)) for (const ws of this.ctx.getWebSockets(`u:${uid}`)) trySend(ws, s);
+  }
+
+  /** Refresh cached presence data (rating, challenge preference) after it changed. */
+  async refreshPresence(uid: string): Promise<void> {
+    const [r, accepts] = await Promise.all([loadRating(this.env.DB, uid, "bullet", Date.now()), acceptsChallenges(this.env.DB, uid)]);
+    for (const ws of this.ctx.getWebSockets(`u:${uid}`)) {
+      const a = ws.deserializeAttachment() as Attachment;
+      ws.serializeAttachment({ ...a, rating: Math.round(r.rating), provisional: isProvisional(r), accepts });
+    }
+  }
+
+  // ---------------------------------------------------------------- scheduled games
+
+  /** Register (or move) the start time of an accepted scheduled challenge. Idempotent. */
+  async scheduleStart(id: string, at: number): Promise<void> {
+    this.ctx.storage.kv.put(`s:${id}`, at);
+    const cur = await this.ctx.storage.getAlarm();
+    const when = Math.max(Date.now() + 50, at);
+    if (cur === null || cur > when) await this.ctx.storage.setAlarm(when);
+  }
+
+  unschedule(id: string): void {
+    this.ctx.storage.kv.delete(`s:${id}`);
+  }
+
+  private nextSchedule(): number | null {
+    let min: number | null = null;
+    for (const [, at] of this.ctx.storage.kv.list<number>({ prefix: "s:" })) if (min === null || at < min) min = at;
+    return min;
+  }
+
+  private async startDueSchedules(): Promise<void> {
+    const now = Date.now();
+    const due = [...this.ctx.storage.kv.list<number>({ prefix: "s:" })].filter(([, at]) => at <= now).map(([k]) => k.slice(2));
+    for (const id of due) {
+      this.ctx.storage.kv.delete(`s:${id}`);
+      try {
+        await this.startScheduled(id);
+      } catch (e) {
+        console.error("scheduled start failed", id, e);
+      }
+    }
+  }
+
+  /** Start an accepted scheduled challenge now. Safe to call more than once. */
+  async startScheduled(id: string): Promise<string | null> {
+    const r = await this.env.DB.prepare(`UPDATE challenges SET status = 'started', updated_at = ?2 WHERE id = ?1 AND status = 'accepted' RETURNING *`).bind(id, Date.now()).first<ChallengeRow>();
+    if (!r) return null;
+    const opp = r.to_id ?? r.accepted_by;
+    if (!opp) return null;
+    let gameId: string;
+    try {
+      gameId = await launchGame(this.env, r, opp, (o) => this.createGame(o));
+    } catch (e) {
+      await this.env.DB.prepare(`UPDATE challenges SET status = 'cancelled', updated_at = ?2 WHERE id = ?1`).bind(id, Date.now()).run();
+      this.notify(parties(r), { t: "challenges", note: "A scheduled game could not be started." });
+      throw e;
+    }
+    this.notify(parties(r), { t: "start", id: gameId });
+    this.notify(parties(r), { t: "challenges" });
+    const names = await this.env.DB.prepare(`SELECT id, COALESCE(display_username, username) AS username FROM user WHERE id IN (?1, ?2)`).bind(r.from_id, opp).all<{ id: string; username: string }>();
+    const name = (uid: string) => names.results.find((u) => u.id === uid)?.username ?? "your opponent";
+    for (const [me, them] of [
+      [r.from_id, opp],
+      [opp, r.from_id],
+    ] as const)
+      if (!this.isOnline(me)) this.ctx.waitUntil(emailStarted(this.env, me, gameId, name(them)));
+    return gameId;
   }
 
   private async ensureAlarm(inMs: number) {
@@ -193,6 +321,7 @@ export class Lobby extends DurableObject<Env> {
 
   /** Creates a game Durable Object for two known users. Also used for rematches. */
   async createGame(o: { whiteId: string; blackId: string; base: number; inc: number; rated: boolean; source: CoreState["source"] }): Promise<string> {
+    if (o.whiteId === o.blackId) throw new Error("cannot play yourself");
     const now = Date.now();
     const perf = perfOf(o);
     const [white, black] = await Promise.all([playerInfo(this.env.DB, o.whiteId, perf, now), playerInfo(this.env.DB, o.blackId, perf, now)]);
@@ -249,7 +378,10 @@ export class Lobby extends DurableObject<Env> {
   recordResult(s: CoreState, fen: string, countsForRating: boolean): Promise<{ white?: number; black?: number }> {
     const run = this.chain.then(() => recordResult(this.env.DB, s, fen, countsForRating, Date.now()));
     this.chain = run.catch(() => undefined);
-    return run.finally(() => this.gameEnded(s.id));
+    return run.finally(async () => {
+      this.gameEnded(s.id);
+      if (countsForRating && s.white && s.black) await Promise.all([this.refreshPresence(s.white.id), this.refreshPresence(s.black.id)]).catch(() => undefined);
+    });
   }
 }
 

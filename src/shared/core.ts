@@ -4,7 +4,7 @@
  * merely displays them.
  */
 import { Chess } from "chess.js";
-import type { Color, GameStatus, GameView, PlayerInfo } from "./protocol";
+import type { Color, GameSource, GameStatus, GameView, PlayerInfo } from "./protocol";
 import { FINISHED } from "./protocol";
 import { firstMoveMs, perfOf, type Perf } from "./tc";
 
@@ -16,7 +16,7 @@ export interface CoreState {
   inc: number;
   rated: boolean;
   perf: Perf;
-  source: "pool" | "challenge" | "rematch";
+  source: GameSource;
   white: PlayerInfo | null;
   black: PlayerInfo | null;
   creatorId: string | null;
@@ -316,6 +316,7 @@ export class GameCore {
       you,
       online,
       spectators,
+      source: this.s.source,
       creatorColor: this.s.status === "waiting" ? this.s.creatorColor : undefined,
     };
   }

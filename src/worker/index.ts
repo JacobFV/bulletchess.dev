@@ -3,8 +3,9 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { uciToMove } from "../shared/core";
 import { isProvisional } from "../shared/glicko";
-import { isValidTimeControl, perfOf, PERFS } from "../shared/tc";
+import { DIRECT_CHALLENGE_TTL_MS, isValidTimeControl, OPEN_CHALLENGE_TTL_MS, perfOf, PERFS, SCHEDULE_MAX_LEAD_MS, SCHEDULE_MIN_LEAD_MS } from "../shared/tc";
 import { createAuth, getSessionUser, type SessionUser } from "./auth";
+import { acceptsChallenges, emailScheduledInvite, getRow, launchGame, maintain, parties, toViews, type ChallengeRow } from "./challenges";
 import { playerInfo, serializeGame, summarizeGame, type GameRow } from "./db";
 import { devMailbox } from "./email";
 import type { Env } from "./env";
@@ -88,6 +89,10 @@ const challengeSchema = z.object({
   inc: z.number().int(),
   rated: z.boolean(),
   color: z.enum(["white", "black", "random"]),
+  /** link: shareable waiting room (default) · open: listed for anyone · direct: to one player */
+  mode: z.enum(["link", "open", "direct"]).default("link"),
+  to: z.string().max(40).optional(),
+  scheduledAt: z.number().int().nullable().optional(),
 });
 
 app.post("/api/challenges", async (c) => {
@@ -95,7 +100,8 @@ app.post("/api/challenges", async (c) => {
   if (!u) return c.json({ error: "Sign in to create a challenge." }, 401);
   const parsed = challengeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success || !isValidTimeControl(parsed.data)) return c.json({ error: "Invalid challenge." }, 400);
-  const { base, inc, rated, color } = parsed.data;
+  const { base, inc, rated, color, mode } = parsed.data;
+  if (mode !== "link") return createListedChallenge(c, u, parsed.data);
   const me = await playerInfo(c.env.DB, u.id, perfOf({ base, inc }), Date.now());
   if (!me) return c.json({ error: "Account not found." }, 404);
   const id = randomId(8);
@@ -111,6 +117,167 @@ app.post("/api/challenges", async (c) => {
     creatorColor: color,
   });
   return c.json({ id });
+});
+
+async function createListedChallenge(c: Context<AppEnv>, u: SessionUser, d: z.infer<typeof challengeSchema>) {
+  const now = Date.now();
+  const db = c.env.DB;
+  let toId: string | null = null;
+  if (d.mode === "direct") {
+    const target = d.to ? await findUser(c.env, d.to) : null;
+    if (!target) return c.json({ error: "No such player." }, 404);
+    if (target.id === u.id) return c.json({ error: "You cannot challenge yourself." }, 400);
+    if (!(await acceptsChallenges(db, target.id))) return c.json({ error: `${target.username} is not accepting challenges.` }, 403);
+    toId = target.id;
+  }
+  const scheduledAt = d.scheduledAt ?? null;
+  // Development-only override so end-to-end tests need not wait two minutes.
+  const minLead = c.env.ENVIRONMENT === "development" && c.env.DEV_SCHEDULE_MIN_LEAD_MS ? Number(c.env.DEV_SCHEDULE_MIN_LEAD_MS) : SCHEDULE_MIN_LEAD_MS - 30_000;
+  if (scheduledAt !== null && (scheduledAt < now + minLead || scheduledAt > now + SCHEDULE_MAX_LEAD_MS))
+    return c.json({ error: "Schedule between 2 minutes and 30 days from now." }, 400);
+  const counts = await db
+    .prepare(`SELECT SUM(CASE WHEN status IN ('pending','accepted') THEN 1 ELSE 0 END) AS open, SUM(CASE WHEN created_at > ?2 THEN 1 ELSE 0 END) AS recent FROM challenges WHERE from_id = ?1`)
+    .bind(u.id, now - 60_000)
+    .first<{ open: number | null; recent: number | null }>();
+  if ((counts?.open ?? 0) >= 20) return c.json({ error: "You have too many open challenges. Cancel some first." }, 429);
+  if ((counts?.recent ?? 0) >= 10) return c.json({ error: "Slow down." }, 429);
+  if (toId && scheduledAt === null) {
+    // One live on-demand challenge per pair: replace an older one.
+    await db.prepare(`UPDATE challenges SET status = 'cancelled', updated_at = ?3 WHERE from_id = ?1 AND to_id = ?2 AND status = 'pending' AND scheduled_at IS NULL`).bind(u.id, toId, now).run();
+  }
+  const id = randomId(10);
+  const expiresAt = scheduledAt ?? now + (toId ? DIRECT_CHALLENGE_TTL_MS : OPEN_CHALLENGE_TTL_MS);
+  await db
+    .prepare(`INSERT INTO challenges (id, from_id, to_id, base, inc, rated, color, status, scheduled_at, expires_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?10)`)
+    .bind(id, u.id, toId, d.base, d.inc, d.rated ? 1 : 0, d.color, scheduledAt, expiresAt, now)
+    .run();
+  const row = (await getRow(db, id))!;
+  const [view] = await toViews(db, [row]);
+  if (toId) {
+    await lobby(c.env).notify([toId], { t: "challenge", c: view! });
+    if (scheduledAt) c.executionCtx.waitUntil(emailScheduledInvite(c.env, row, u.username));
+  }
+  return c.json({ challenge: view });
+}
+
+app.get("/api/challenges", async (c) => {
+  const u = await user(c);
+  if (!u) return c.json({ error: "Sign in." }, 401);
+  const now = Date.now();
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM challenges WHERE (from_id = ?1 OR to_id = ?1 OR accepted_by = ?1)
+       AND (status IN ('pending','accepted') OR (status = 'started' AND updated_at > ?2))
+     ORDER BY COALESCE(scheduled_at, created_at) ASC LIMIT 100`,
+  )
+    .bind(u.id, now - 3600_000)
+    .all<ChallengeRow>();
+  const views = await toViews(c.env.DB, results.filter((r) => r.status !== "pending" || r.expires_at > now));
+  return c.json({
+    incoming: views.filter((v) => v.status === "pending" && v.to?.id === u.id),
+    outgoing: views.filter((v) => v.status === "pending" && v.from.id === u.id),
+    upcoming: views.filter((v) => v.status === "accepted"),
+    started: views.filter((v) => v.status === "started"),
+  });
+});
+
+app.get("/api/challenges/open", async (c) => {
+  const now = Date.now();
+  const { results } = await c.env.DB.prepare(`SELECT * FROM challenges WHERE status = 'pending' AND to_id IS NULL AND expires_at > ?1 ORDER BY COALESCE(scheduled_at, created_at) ASC LIMIT 50`)
+    .bind(now)
+    .all<ChallengeRow>();
+  return c.json({ challenges: await toViews(c.env.DB, results) });
+});
+
+app.post("/api/challenges/:id/accept", async (c) => {
+  const u = await user(c);
+  if (!u) return c.json({ error: "Sign in to accept challenges." }, 401);
+  const id = c.req.param("id");
+  const now = Date.now();
+  const row = await getRow(c.env.DB, id);
+  if (!row || row.status !== "pending" || row.expires_at <= now) return c.json({ error: "This challenge is no longer available." }, 410);
+  if (row.from_id === u.id) return c.json({ error: "You cannot accept your own challenge." }, 400);
+  if (row.to_id && row.to_id !== u.id) return c.json({ error: "This challenge is for someone else." }, 403);
+  const next = row.scheduled_at ? "accepted" : "started";
+  const won = await c.env.DB.prepare(`UPDATE challenges SET status = ?2, accepted_by = ?3, updated_at = ?4 WHERE id = ?1 AND status = 'pending' AND expires_at > ?4 RETURNING *`)
+    .bind(id, next, u.id, now)
+    .first<ChallengeRow>();
+  if (!won) return c.json({ error: "Someone else got there first." }, 409);
+  const l = lobby(c.env);
+  if (won.scheduled_at) {
+    await l.scheduleStart(won.id, won.scheduled_at);
+    await l.notify(parties(won), { t: "challenges", note: `${u.username} accepted your scheduled game.` });
+    return c.json({ scheduledAt: won.scheduled_at });
+  }
+  try {
+    const gameId = await launchGame(c.env, won, u.id, (o) => l.createGame(o));
+    await l.notify(parties(won), { t: "start", id: gameId });
+    await l.notify(parties(won), { t: "challenges" });
+    return c.json({ gameId });
+  } catch (e) {
+    console.error("accept failed", e);
+    await c.env.DB.prepare(`UPDATE challenges SET status = 'cancelled', updated_at = ?2 WHERE id = ?1`).bind(id, Date.now()).run();
+    await l.notify(parties(won), { t: "challenges" });
+    return c.json({ error: "Could not start the game." }, 500);
+  }
+});
+
+app.post("/api/challenges/:id/decline", async (c) => {
+  const u = await user(c);
+  if (!u) return c.json({ error: "Sign in." }, 401);
+  const id = c.req.param("id");
+  const now = Date.now();
+  const row = await getRow(c.env.DB, id);
+  if (!row || (row.status !== "pending" && row.status !== "accepted")) return c.json({ error: "This challenge is no longer active." }, 410);
+  const l = lobby(c.env);
+  if (!row.to_id && row.accepted_by === u.id && row.status === "accepted") {
+    // Withdrawing from an open scheduled challenge reopens it for others.
+    await c.env.DB.prepare(`UPDATE challenges SET status = 'pending', accepted_by = NULL, reminded = 0, updated_at = ?2 WHERE id = ?1 AND status = 'accepted'`).bind(id, now).run();
+    await l.unschedule(id);
+    await l.notify(parties(row), { t: "challenges", note: `${u.username} withdrew from your scheduled game.` });
+    return c.json({ ok: true });
+  }
+  if (row.to_id !== u.id) return c.json({ error: "Not your challenge." }, 403);
+  await c.env.DB.prepare(`UPDATE challenges SET status = 'declined', updated_at = ?2 WHERE id = ?1 AND status IN ('pending','accepted')`).bind(id, now).run();
+  await l.unschedule(id);
+  await l.notify(parties(row), { t: "challenges", note: `${u.username} declined your challenge.` });
+  return c.json({ ok: true });
+});
+
+app.post("/api/challenges/:id/cancel", async (c) => {
+  const u = await user(c);
+  if (!u) return c.json({ error: "Sign in." }, 401);
+  const id = c.req.param("id");
+  const row = await getRow(c.env.DB, id);
+  if (!row || row.from_id !== u.id) return c.json({ error: "Not your challenge." }, 403);
+  if (row.status !== "pending" && row.status !== "accepted") return c.json({ error: "This challenge is no longer active." }, 410);
+  await c.env.DB.prepare(`UPDATE challenges SET status = 'cancelled', updated_at = ?2 WHERE id = ?1 AND status IN ('pending','accepted')`).bind(id, Date.now()).run();
+  const l = lobby(c.env);
+  await l.unschedule(id);
+  await l.notify(parties(row), { t: "challenges", note: `${u.username} cancelled a challenge.` });
+  return c.json({ ok: true });
+});
+
+app.get("/api/players/online", async (c) => {
+  const players = await lobby(c.env).onlinePlayers(300);
+  return c.json({ players });
+});
+
+app.get("/api/me/prefs", async (c) => {
+  const u = await user(c);
+  if (!u) return c.json({ error: "Sign in." }, 401);
+  return c.json({ challenges: (await acceptsChallenges(c.env.DB, u.id)) ? "everyone" : "nobody" });
+});
+
+app.post("/api/me/prefs", async (c) => {
+  const u = await user(c);
+  if (!u) return c.json({ error: "Sign in." }, 401);
+  const parsed = z.object({ challenges: z.enum(["everyone", "nobody"]) }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: "Invalid preferences." }, 400);
+  await c.env.DB.prepare(`INSERT INTO user_prefs (user_id, challenges, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(user_id) DO UPDATE SET challenges = ?2, updated_at = ?3`)
+    .bind(u.id, parsed.data.challenges, Date.now())
+    .run();
+  await lobby(c.env).refreshPresence(u.id);
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------- games
@@ -250,7 +417,7 @@ app.get("/api/users/:username", async (c) => {
   ]);
   type R = { perf: string; rating: number; rd: number; games: number; wins: number; losses: number; draws: number; best: number | null; last_played_at: number | null };
   return c.json({
-    user: { id: u.id, username: u.username, createdAt: u.created_at },
+    user: { id: u.id, username: u.username, createdAt: u.created_at, online: await lobby(c.env).isOnline(u.id), acceptsChallenges: await acceptsChallenges(c.env.DB, u.id) },
     ratings: Object.fromEntries(
       (ratings!.results as R[]).map((r) => [
         r.perf,
@@ -329,5 +496,8 @@ export default {
     }
     if (url.pathname.startsWith("/api/")) return app.fetch(req, env, ctx);
     return env.ASSETS.fetch(req);
+  },
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(maintain(env));
   },
 } satisfies ExportedHandler<Env>;

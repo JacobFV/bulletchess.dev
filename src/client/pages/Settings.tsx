@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { api } from "../lib/api";
 import { Link, useNavigate } from "react-router";
 import { MiniBoard } from "../components/MiniBoard";
 import { authClient, authMessage } from "../lib/auth";
@@ -80,8 +81,41 @@ export function Settings() {
         </label>
       </section>
 
-      {me?.user ? <Account refresh={refresh} /> : <p className="muted">These preferences are stored in this browser. <Link to="/signin">Sign in</Link> to manage your account.</p>}
+      {me?.user ? (
+        <>
+          <ChallengePrefs />
+          <Account refresh={refresh} />
+        </>
+      ) : <p className="muted">These preferences are stored in this browser. <Link to="/signin">Sign in</Link> to manage your account.</p>}
     </div>
+  );
+}
+
+function ChallengePrefs() {
+  const [value, setValue] = useState<"everyone" | "nobody" | null>(null);
+  useEffect(() => {
+    api<{ challenges: "everyone" | "nobody" }>("/api/me/prefs").then((r) => setValue(r.challenges), () => {});
+  }, []);
+  const set = async (v: "everyone" | "nobody") => {
+    setValue(v);
+    await api("/api/me/prefs", { method: "POST", json: { challenges: v } }).catch(() => {});
+  };
+  return (
+    <section className="card">
+      <h2>Challenges</h2>
+      <div className="field">
+        <span>Who can challenge you (now or scheduled)</span>
+        <div className="seg">
+          <button className={value === "everyone" ? "on" : ""} disabled={!value} onClick={() => set("everyone")}>
+            Everyone
+          </button>
+          <button className={value === "nobody" ? "on" : ""} disabled={!value} onClick={() => set("nobody")}>
+            Nobody
+          </button>
+        </div>
+        <small className="muted">Open challenges and pool games are unaffected.</small>
+      </div>
+    </section>
   );
 }
 

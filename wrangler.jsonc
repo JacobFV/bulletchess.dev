@@ -13,6 +13,8 @@
     { "pattern": "www.bulletchess.dev", "custom_domain": true }
   ],
   "observability": { "enabled": true },
+  // Every minute: expire challenges, send reminders, keep scheduled starts registered.
+  "triggers": { "crons": ["* * * * *"] },
   "assets": {
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",

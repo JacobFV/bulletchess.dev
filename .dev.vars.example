@@ -2,3 +2,4 @@ ENVIRONMENT=development
 APP_ORIGIN=http://localhost:5173
 EMAIL_PROVIDER=log
 BETTER_AUTH_SECRET=dev-only-secret-change-me-dev-only-secret
+DEV_SCHEDULE_MIN_LEAD_MS=5000

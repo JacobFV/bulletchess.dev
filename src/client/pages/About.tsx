@@ -42,6 +42,13 @@ export function About() {
         Matchmaking pairs players within a rating window that widens the longer you wait.
       </p>
 
+      <h2>Challenges and scheduled games</h2>
+      <p>
+        Challenge a specific player or post an open challenge for anyone, either now or at a set time. On-demand challenges expire after two minutes (open ones after ten). Scheduled games
+        start by themselves at the agreed time on whatever bulletchess page you have open; you get an email reminder ten minutes before, and each side has three minutes to make a first move. You
+        can stop people from challenging you in <Link to="/settings">settings</Link>.
+      </p>
+
       <h2>Fair play</h2>
       <p>No engines, no outside help, no multiple accounts. Games against the computer are always casual.</p>
 

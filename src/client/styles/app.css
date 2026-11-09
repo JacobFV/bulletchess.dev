@@ -1198,6 +1198,231 @@ cg-board square.current-premove {
   min-width: 2.4rem;
 }
 
+
+/* ---------- presence & challenges */
+.with-badge {
+  position: relative;
+}
+.nav-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.3rem;
+  margin-left: 0.35rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.page-head .btn {
+  flex: none;
+}
+.page-head,
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.section-head h2 {
+  margin-bottom: 0.6rem;
+}
+.home-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.4rem;
+  margin-top: 0.8rem;
+}
+.count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 999px;
+  background: var(--panel2);
+  font-size: 0.8rem;
+  margin-left: 0.3rem;
+}
+.search {
+  max-width: 320px;
+  margin-bottom: 0.8rem;
+}
+.online-list {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.online-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+  min-height: 2.9rem;
+}
+.online-row:last-child {
+  border-bottom: 0;
+}
+.online-row .pname {
+  min-width: 0;
+}
+.online-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex: none;
+}
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--good);
+}
+.status-dot.playing {
+  background: var(--accent);
+}
+.status-dot.seeking {
+  background: #6aa9f2;
+  animation: pulse-dot 1s infinite alternate;
+}
+@keyframes pulse-dot {
+  to {
+    opacity: 0.4;
+  }
+}
+.status-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.status-label.playing {
+  color: var(--accent);
+}
+.challenge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.challenge-card {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.4rem 1rem;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.7rem 0.9rem;
+}
+.challenge-card.compact {
+  grid-template-columns: 1fr auto;
+  padding: 0.6rem 0.7rem;
+}
+.challenge-card.compact .cc-actions {
+  grid-column: 1 / -1;
+}
+.challenge-card .alert {
+  grid-column: 1 / -1;
+}
+.cc-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.7rem;
+  align-items: center;
+  min-width: 0;
+}
+.cc-main .tc {
+  font-size: 1.15rem;
+  color: var(--accent);
+}
+.cc-who {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+.cc-when {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.1rem;
+  font-size: 0.9rem;
+}
+.cc-actions {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+.toasts {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  z-index: 200;
+  width: min(420px, calc(100vw - 2rem));
+}
+.toast {
+  position: relative;
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  padding: 0.8rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  animation: toast-in 0.18s ease-out;
+}
+.toast .challenge-card {
+  border: 0;
+  padding: 0;
+  background: none;
+}
+.toast-title {
+  font-weight: 800;
+  margin-bottom: 0.4rem;
+  color: var(--accent);
+}
+.toast-x {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.5rem;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 1.3rem;
+  cursor: pointer;
+}
+@keyframes toast-in {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+}
+input[type="datetime-local"] {
+  color-scheme: dark;
+}
+@media (max-width: 720px) {
+  .home-columns {
+    grid-template-columns: 1fr;
+  }
+  .challenge-card {
+    grid-template-columns: 1fr auto;
+  }
+  .challenge-card .cc-actions {
+    grid-column: 1 / -1;
+  }
+  .status-label {
+    display: none;
+  }
+  .page-head h1 {
+    font-size: 1.45rem;
+  }
+}
+
 /* ---------- responsive */
 @media (max-width: 900px) {
   .game-layout {

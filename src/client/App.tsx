@@ -1,11 +1,15 @@
 import { useEffect, useState } from "react";
 import { createBrowserRouter, Link, NavLink, Outlet, RouterProvider, useLocation, useNavigate } from "react-router";
 import { authClient } from "./lib/auth";
+import { Toasts } from "./components/Toasts";
+import { LobbyProvider, useLobby } from "./lib/lobby";
 import { MeProvider, useMe } from "./lib/me";
 import { BOARD_THEMES, usePrefs } from "./lib/prefs";
 import { About, NotFound } from "./pages/About";
 import { ForgotPassword, ResetPassword, SignIn, SignUp, VerifyEmail } from "./pages/Auth";
 import { BotPage } from "./pages/Bot";
+import { Challenges } from "./pages/Challenges";
+import { Players } from "./pages/Players";
 import { GamePage } from "./pages/Game";
 import { Home } from "./pages/Home";
 import { Leaderboard } from "./pages/Leaderboard";
@@ -13,7 +17,17 @@ import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 
 function Layout() {
+  return (
+    <LobbyProvider>
+      <Shell />
+    </LobbyProvider>
+  );
+}
+
+function Shell() {
   const { me, refresh } = useMe();
+  const { challenges } = useLobby();
+  const incoming = challenges.incoming.length;
   const nav = useNavigate();
   const loc = useLocation();
   const prefs = usePrefs();
@@ -44,6 +58,13 @@ function Layout() {
           <NavLink to="/" end>
             Play
           </NavLink>
+          <NavLink to="/players">Players</NavLink>
+          {me?.user && (
+            <NavLink to="/challenges" className="with-badge">
+              Challenges
+              {incoming > 0 && <span className="nav-badge">{incoming}</span>}
+            </NavLink>
+          )}
           <NavLink to="/bot">Computer</NavLink>
           <NavLink to="/leaderboard">Leaderboard</NavLink>
           <NavLink to="/about">About</NavLink>
@@ -75,6 +96,7 @@ function Layout() {
       <main>
         <Outlet />
       </main>
+      <Toasts />
       <footer className="footer muted">
         <span>bulletchess.dev</span>
         <a href="https://github.com/JacobFV/bulletchess.dev" rel="noopener">
@@ -93,6 +115,8 @@ const router = createBrowserRouter([
       { path: "/", element: <Home /> },
       { path: "/game/:id", element: <GamePage /> },
       { path: "/bot", element: <BotPage /> },
+      { path: "/players", element: <Players /> },
+      { path: "/challenges", element: <Challenges /> },
       { path: "/@/:username", element: <Profile /> },
       { path: "/leaderboard", element: <Leaderboard /> },
       { path: "/settings", element: <Settings /> },

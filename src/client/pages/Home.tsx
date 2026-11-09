@@ -1,95 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import type { ClientLobbyMsg, ServerLobbyMsg } from "../../shared/protocol";
-import { ALLOWED_BASES, ALLOWED_INCS, estimatedSeconds, perfOf, PERF_LABEL, POOLS, tcLabel, type PoolId } from "../../shared/tc";
+import { perfOf, PERF_LABEL, POOLS, tcLabel, type PoolId } from "../../shared/tc";
+import { ChallengeCard } from "../components/ChallengeCard";
+import { ChallengeDialog } from "../components/ChallengeDialog";
 import { GameRow, type GameSummary } from "../components/GameRow";
 import { PlayerTag } from "../components/PlayerTag";
-import { api, wsUrl } from "../lib/api";
+import { api } from "../lib/api";
+import { useLobby } from "../lib/lobby";
 import { useMe } from "../lib/me";
-import { sound, unlockAudio } from "../lib/sound";
+import { unlockAudio } from "../lib/sound";
+import { OnlineList, useOnlinePlayers, useOpenChallenges } from "./Players";
 import type { LiveGame } from "../../shared/protocol";
-
-interface Stats {
-  players: number;
-  games: number;
-  pools: Record<string, number>;
-}
 
 export function Home() {
   const { me } = useMe();
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [seeking, setSeeking] = useState<{ pool: PoolId; since: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [challengeOpen, setChallengeOpen] = useState(false);
+  const { stats, seeking, error, connected, seek: lobbySeek, cancelSeek, clearError } = useLobby();
+  const [dialog, setDialog] = useState<{ to?: string } | null>(null);
   const [live, setLive] = useState<LiveGame[]>([]);
   const [recent, setRecent] = useState<GameSummary[]>([]);
-  const ws = useRef<WebSocket | null>(null);
-  const pendingSeek = useRef<PoolId | null>(null);
+  const players = useOnlinePlayers();
+  const open = useOpenChallenges();
   const [, tick] = useState(0);
-
-  const send = (m: ClientLobbyMsg) => {
-    if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(m));
-  };
-
-  useEffect(() => {
-    let closed = false;
-    let retry = 0;
-    let timer: number | undefined;
-    let keepalive: number | undefined;
-    const connect = () => {
-      const s = new WebSocket(wsUrl("/api/lobby/ws"));
-      ws.current = s;
-      s.onopen = () => {
-        retry = 0;
-        setConnected(true);
-        keepalive = window.setInterval(() => s.readyState === WebSocket.OPEN && s.send(JSON.stringify({ t: "ping" })), 25_000);
-        if (pendingSeek.current) {
-          s.send(JSON.stringify({ t: "seek", pool: pendingSeek.current } satisfies ClientLobbyMsg));
-        }
-      };
-      s.onmessage = (e) => {
-        const m = JSON.parse(e.data) as ServerLobbyMsg;
-        switch (m.t) {
-          case "hello":
-          case "stats":
-            setStats({ players: m.players, games: m.games, pools: m.pools });
-            break;
-          case "seeking":
-            setSeeking({ pool: m.pool, since: performance.now() });
-            break;
-          case "cancelled":
-            pendingSeek.current = null;
-            setSeeking(null);
-            break;
-          case "start":
-            pendingSeek.current = null;
-            sound.start();
-            nav(`/game/${m.id}`);
-            break;
-          case "error":
-            pendingSeek.current = null;
-            setSeeking(null);
-            setError(m.message);
-            break;
-        }
-      };
-      s.onclose = () => {
-        window.clearInterval(keepalive);
-        setConnected(false);
-        if (!closed) timer = window.setTimeout(connect, Math.min(5000, 300 * 2 ** retry++));
-      };
-    };
-    connect();
-    return () => {
-      closed = true;
-      window.clearTimeout(timer);
-      window.clearInterval(keepalive);
-      ws.current?.close();
-    };
-  }, [nav]);
 
   useEffect(() => {
     const load = () => {
@@ -109,37 +42,25 @@ export function Home() {
 
   const seek = (pool: PoolId) => {
     unlockAudio();
-    setError(null);
+    clearError();
     if (!me?.user) {
       nav(`/signin?next=${encodeURIComponent(`/?seek=${pool}`)}`);
       return;
     }
-    if (seeking?.pool === pool) {
-      cancel();
-      return;
-    }
-    pendingSeek.current = pool;
-    setSeeking({ pool, since: performance.now() });
-    send({ t: "seek", pool });
-  };
-  const cancel = () => {
-    pendingSeek.current = null;
-    setSeeking(null);
-    send({ t: "cancel" });
+    if (seeking?.pool === pool) return cancelSeek();
+    lobbySeek(pool);
   };
 
   // ?seek=1+0 (from "New opponent" or after signing in) starts seeking automatically.
   const auto = params.get("seek");
   useEffect(() => {
-    if (!auto || !me) return;
-    if (me.user && POOLS.some((p) => p.id === auto)) {
-      pendingSeek.current = auto as PoolId;
-      setSeeking({ pool: auto as PoolId, since: performance.now() });
-      send({ t: "seek", pool: auto as PoolId });
-    }
+    if (!auto || !me || !connected) return;
+    if (me.user && POOLS.some((p) => p.id === auto)) lobbySeek(auto as PoolId);
     setParams({}, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, me]);
+  }, [auto, me, connected]);
+
+  const otherOpen = open.filter((c) => c.from.id !== me?.user?.id);
 
   return (
     <div className="page home">
@@ -154,6 +75,7 @@ export function Home() {
         {POOLS.map((p) => {
           const active = seeking?.pool === p.id;
           const waiting = stats?.pools[p.id] ?? 0;
+          const r = me?.ratings[perfOf(p)];
           return (
             <button key={p.id} className={`pool${active ? " active" : ""}`} onClick={() => seek(p.id)} aria-pressed={active}>
               <span className="pool-tc">{tcLabel(p)}</span>
@@ -163,7 +85,7 @@ export function Home() {
                   <span className="spinner" /> {Math.floor((performance.now() - seeking.since) / 1000)}s · cancel
                 </span>
               ) : (
-                <span className="pool-wait muted">{waiting > 0 ? `${waiting} waiting` : me?.user ? (me.ratings[perfOf(p)] ? `${me.ratings[perfOf(p)]!.rating}${me.ratings[perfOf(p)]!.provisional ? "?" : ""}` : "1500?") : " "}</span>
+                <span className="pool-wait muted">{waiting > 0 ? `${waiting} waiting` : me?.user ? (r ? `${r.rating}${r.provisional ? "?" : ""}` : "1500?") : "\u00a0"}</span>
               )}
             </button>
           );
@@ -177,8 +99,8 @@ export function Home() {
       )}
 
       <section className="actions">
-        <button className="btn big" onClick={() => (me?.user ? setChallengeOpen(true) : nav("/signin?next=/"))}>
-          Challenge a friend
+        <button className="btn big" onClick={() => (me?.user ? setDialog({}) : nav("/signin?next=/"))}>
+          Challenge someone
         </button>
         <Link className="btn big" to="/bot">
           Play the computer
@@ -200,6 +122,41 @@ export function Home() {
           </Link>
         </div>
       )}
+
+      <div className="home-columns">
+        <section>
+          <div className="section-head">
+            <h2>Online players</h2>
+            <Link to="/players" className="small">
+              All players →
+            </Link>
+          </div>
+          {players === null ? (
+            <p className="muted small">Loading…</p>
+          ) : players.length === 0 ? (
+            <p className="muted small">Nobody signed in right now.</p>
+          ) : (
+            <OnlineList players={players} limit={8} onChallenge={(u) => setDialog({ to: u })} />
+          )}
+        </section>
+        <section>
+          <div className="section-head">
+            <h2>Open challenges</h2>
+            <Link to="/challenges" className="small">
+              My challenges →
+            </Link>
+          </div>
+          {otherOpen.length === 0 ? (
+            <p className="muted small">No open challenges. Post one with “Challenge someone” → Anyone, now or at a set time.</p>
+          ) : (
+            <div className="challenge-list">
+              {otherOpen.slice(0, 6).map((c) => (
+                <ChallengeCard key={c.id} c={c} compact />
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
 
       {live.length > 0 && (
         <section>
@@ -229,93 +186,7 @@ export function Home() {
         </section>
       )}
 
-      {challengeOpen && <ChallengeDialog onClose={() => setChallengeOpen(false)} />}
-    </div>
-  );
-}
-
-function ChallengeDialog({ onClose }: { onClose: () => void }) {
-  const nav = useNavigate();
-  const [base, setBase] = useState(60);
-  const [inc, setInc] = useState(0);
-  const [rated, setRated] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const valid = estimatedSeconds({ base, inc }) <= 180;
-
-  const create = async (color: "white" | "black" | "random") => {
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await api<{ id: string }>("/api/challenges", { method: "POST", json: { base, inc, rated, color } });
-      nav(`/game/${r.id}`);
-    } catch (e) {
-      setError((e as Error).message);
-      setBusy(false);
-    }
-  };
-
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", k);
-    return () => window.removeEventListener("keydown", k);
-  }, [onClose]);
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="ch-title" onClick={(e) => e.stopPropagation()}>
-        <h2 id="ch-title">Challenge a friend</h2>
-        <label className="field">
-          <span>Minutes per side</span>
-          <div className="seg">
-            {ALLOWED_BASES.map((b) => (
-              <button key={b} className={b === base ? "on" : ""} onClick={() => setBase(b)}>
-                {tcLabel({ base: b, inc: 0 }).split("+")[0]}
-              </button>
-            ))}
-          </div>
-        </label>
-        <label className="field">
-          <span>Increment (seconds)</span>
-          <div className="seg">
-            {ALLOWED_INCS.map((i) => (
-              <button key={i} className={i === inc ? "on" : ""} onClick={() => setInc(i)}>
-                {i}
-              </button>
-            ))}
-          </div>
-        </label>
-        <div className="field">
-          <span>Mode</span>
-          <div className="seg">
-            <button className={rated ? "on" : ""} onClick={() => setRated(true)}>
-              Rated
-            </button>
-            <button className={!rated ? "on" : ""} onClick={() => setRated(false)}>
-              Casual
-            </button>
-          </div>
-        </div>
-        <div className="muted small">
-          {tcLabel({ base, inc })} · {PERF_LABEL[perfOf({ base, inc })]}
-          {!valid && <span className="bad"> · too slow for bullet (base + 40 × increment must be ≤ 3 min)</span>}
-        </div>
-        {error && <div className="alert">{error}</div>}
-        <div className="color-pick">
-          <button className="btn color white" disabled={!valid || busy} onClick={() => create("white")} title="Play white">
-            ♔ White
-          </button>
-          <button className="btn color random primary" disabled={!valid || busy} onClick={() => create("random")} title="Random color">
-            ⚄ Random
-          </button>
-          <button className="btn color black" disabled={!valid || busy} onClick={() => create("black")} title="Play black">
-            ♚ Black
-          </button>
-        </div>
-        <button className="btn ghost" onClick={onClose}>
-          Cancel
-        </button>
-      </div>
+      {dialog && <ChallengeDialog to={dialog.to} onClose={() => setDialog(null)} />}
     </div>
   );
 }
