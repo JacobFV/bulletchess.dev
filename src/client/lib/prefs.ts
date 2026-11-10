@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-export type BoardTheme = "brown" | "blue" | "green" | "grey" | "purple";
+export type BoardTheme = "stone" | "brown" | "blue" | "green" | "grey" | "purple";
 export interface Prefs {
   board: BoardTheme;
   sound: boolean;
@@ -15,7 +15,7 @@ export interface Prefs {
 }
 
 const DEFAULTS: Prefs = {
-  board: "brown",
+  board: "stone",
   sound: true,
   volume: 0.7,
   premove: true,
@@ -27,13 +27,23 @@ const DEFAULTS: Prefs = {
   zen: false,
 };
 
+export const BOARD_THEMES: Record<BoardTheme, [string, string]> = {
+  stone: ["#e8e3d8", "#a39c8d"],
+  brown: ["#f0d9b5", "#b58863"],
+  blue: ["#dee3e6", "#8ca2ad"],
+  green: ["#ffffdd", "#86a666"],
+  grey: ["#d9d9d9", "#9a9a9a"],
+  purple: ["#e6dcf0", "#9b80b8"],
+};
+
 const KEY = "bc:prefs";
 let current: Prefs = read();
 const listeners = new Set<() => void>();
 
 function read(): Prefs {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    const saved = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    return saved.board in BOARD_THEMES ? saved : { ...saved, board: DEFAULTS.board };
   } catch {
     return { ...DEFAULTS };
   }
@@ -62,11 +72,3 @@ export function usePrefs(): Prefs {
     () => current,
   );
 }
-
-export const BOARD_THEMES: Record<BoardTheme, [string, string]> = {
-  brown: ["#f0d9b5", "#b58863"],
-  blue: ["#dee3e6", "#8ca2ad"],
-  green: ["#ffffdd", "#86a666"],
-  grey: ["#d9d9d9", "#9a9a9a"],
-  purple: ["#e6dcf0", "#9b80b8"],
-};

@@ -12,6 +12,11 @@ import { unlockAudio } from "../lib/sound";
 import { OnlineList, useOnlinePlayers, useOpenChallenges } from "./Players";
 import type { LiveGame } from "../../shared/protocol";
 
+/** 15 → "0:15", 120 → "2:00": a time control drawn the way the clock will show it. */
+function clockFace(base: number) {
+  return `${Math.floor(base / 60)}:${String(base % 60).padStart(2, "0")}`;
+}
+
 export function Home() {
   const { me } = useMe();
   const nav = useNavigate();
@@ -65,10 +70,25 @@ export function Home() {
   return (
     <div className="page home">
       <section className="hero">
-        <h1>
-          Bullet chess. <span className="accent">Nothing else.</span>
-        </h1>
-        <p className="muted">15 seconds to 3 minutes. Server-side clocks, premoves, lag compensation, Glicko-2 ratings. Free and open source.</p>
+        <div className="hero-copy">
+          <p className="eyebrow">15 seconds to 3 minutes</p>
+          <h1>
+            Bullet chess. <em>Nothing else.</em>
+          </h1>
+          <p className="lede">Server-side clocks, premoves, lag compensation and Glicko-2 ratings. Free and open source.</p>
+        </div>
+        <dl className="hero-stats" aria-live="polite">
+          <div>
+            <dt>
+              <span className={`dot${connected ? " on" : ""}`} /> Online
+            </dt>
+            <dd>{stats ? stats.players : "–"}</dd>
+          </div>
+          <div>
+            <dt>Playing now</dt>
+            <dd>{stats ? stats.games : "–"}</dd>
+          </div>
+        </dl>
       </section>
 
       <section className="pools" aria-label="Quick pairing">
@@ -77,16 +97,23 @@ export function Home() {
           const waiting = stats?.pools[p.id] ?? 0;
           const r = me?.ratings?.[perfOf(p)];
           return (
-            <button key={p.id} className={`pool${active ? " active" : ""}`} onClick={() => seek(p.id)} aria-pressed={active}>
-              <span className="pool-tc">{tcLabel(p)}</span>
-              <span className="pool-name">{PERF_LABEL[perfOf(p)]}</span>
-              {active ? (
-                <span className="pool-wait">
-                  <span className="spinner" /> {Math.floor((performance.now() - seeking.since) / 1000)}s · cancel
-                </span>
-              ) : (
-                <span className="pool-wait muted">{waiting > 0 ? `${waiting} waiting` : me?.user ? (r ? `${r.rating}${r.provisional ? "?" : ""}` : "1500?") : "\u00a0"}</span>
-              )}
+            <button key={p.id} className={`pool${active ? " active" : ""}`} onClick={() => seek(p.id)} aria-pressed={active} aria-label={`${tcLabel(p)} ${PERF_LABEL[perfOf(p)]}`}>
+              <span className="pool-top">
+                <span className="pool-name">{PERF_LABEL[perfOf(p)]}</span>
+                {active ? (
+                  <span className="pool-wait">{Math.floor((performance.now() - seeking.since) / 1000)}s</span>
+                ) : waiting > 0 ? (
+                  <span className="pool-wait live">{waiting} waiting</span>
+                ) : me?.user ? (
+                  <span className="pool-wait">{r ? `${r.rating}${r.provisional ? "?" : ""}` : "1500?"}</span>
+                ) : null}
+              </span>
+              <span className="pool-tc">
+                <span className="pool-base">{clockFace(p.base)}</span>
+                <span className="pool-inc">+{p.inc}</span>
+              </span>
+              <span className="pool-foot">{active ? "Searching · tap to cancel" : p.inc ? `${p.inc}s increment` : "no increment"}</span>
+              {active && <span className="pool-scan" aria-hidden="true" />}
             </button>
           );
         })}
@@ -99,17 +126,13 @@ export function Home() {
       )}
 
       <section className="actions">
-        <button className="btn big" onClick={() => (me?.user ? setDialog({}) : nav("/signin?next=/"))}>
+        <button className="btn" onClick={() => (me?.user ? setDialog({}) : nav("/signin?next=/"))}>
           Challenge someone
         </button>
-        <Link className="btn big" to="/bot">
+        <Link className="btn" to="/bot">
           Play the computer
         </Link>
       </section>
-
-      <div className="online-line muted">
-        <span className={`dot${connected ? " on" : ""}`} /> {stats ? `${stats.players} online · ${stats.games} game${stats.games === 1 ? "" : "s"} in progress` : "connecting…"}
-      </div>
 
       {!me?.user && me && (
         <div className="card cta">

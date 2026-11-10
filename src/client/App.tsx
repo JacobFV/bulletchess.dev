@@ -49,7 +49,10 @@ function Shell() {
     <div className="app">
       <header className="topbar">
         <Link to="/" className="logo" aria-label="bulletchess home">
-          bullet<span>chess</span>
+          <Mark />
+          <span className="logo-word">
+            bullet<span>chess</span>
+          </span>
         </Link>
         <button className="btn icon menu-btn" onClick={() => setMenu((m) => !m)} aria-expanded={menu} aria-label="Menu">
           ☰
@@ -98,13 +101,24 @@ function Shell() {
       </main>
       <Toasts />
       <footer className="footer muted">
-        <span>bulletchess.dev</span>
+        <span className="footer-brand">
+          <Mark /> bulletchess.dev
+        </span>
         <a href="https://github.com/JacobFV/bulletchess.dev" rel="noopener">
           Source
         </a>
         <Link to="/about">About &amp; privacy</Link>
       </footer>
     </div>
+  );
+}
+
+export function Mark() {
+  return (
+    <svg className="mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M3 12h9M1 16h11M3 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" opacity=".45" />
+      <circle cx="22" cy="16" r="8" fill="currentColor" />
+    </svg>
   );
 }
 
