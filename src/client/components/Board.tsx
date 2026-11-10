@@ -22,6 +22,8 @@ export interface BoardProps {
   apiRef?: React.MutableRefObject<Api | null>;
 }
 
+let boardsUp = 0;
+
 export function Board(p: BoardProps) {
   const el = useRef<HTMLDivElement>(null);
   const cg = useRef<Api | null>(null);
@@ -51,6 +53,15 @@ export function Board(p: BoardProps) {
     drawable: { enabled: true, visible: true, autoShapes: p.shapes ?? [] },
     blockTouchScroll: true,
   });
+
+  // While a real board is up, the backdrop stops playing and blurs further.
+  useEffect(() => {
+    boardsUp++;
+    document.body.classList.add("has-board");
+    return () => {
+      if (--boardsUp === 0) document.body.classList.remove("has-board");
+    };
+  }, []);
 
   useEffect(() => {
     if (!el.current) return;

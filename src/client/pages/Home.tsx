@@ -28,6 +28,7 @@ export function Home() {
   const players = useOnlinePlayers();
   const open = useOpenChallenges();
   const [, tick] = useState(0);
+  const [tab, setTab] = useState<"online" | "open" | "live" | "recent">("online");
 
   useEffect(() => {
     const load = () => {
@@ -67,147 +68,155 @@ export function Home() {
 
   const otherOpen = open.filter((c) => c.from.id !== me?.user?.id);
 
+  const tabs = [
+    { id: "online", label: "Online", n: players?.length ?? 0 },
+    { id: "open", label: "Challenges", n: otherOpen.length },
+    { id: "live", label: "Live", n: live.length },
+    { id: "recent", label: "Recent", n: 0 },
+  ] as const;
+
   return (
-    <div className="page home">
-      <section className="hero">
-        <div className="hero-copy">
-          <p className="eyebrow">15 seconds to 3 minutes</p>
-          <h1>
-            Bullet chess. <em>Nothing else.</em>
-          </h1>
-          <p className="lede">Server-side clocks, premoves, lag compensation and Glicko-2 ratings. Free and open source.</p>
+    <div className="home">
+      <h1 className="title-sticker">
+        <span className="ts-1">Bullet</span>
+        <span className="ts-2">Chess!</span>
+        <span className="ts-tag">15 seconds → 3 minutes</span>
+      </h1>
+
+      <div className="page menu">
+        <div className="ribbon">Pick your speed</div>
+
+        <div className="status-pills">
+          <span className="spill">
+            <span className={`dot${connected ? " on" : ""}`} /> {stats ? `${stats.players} online` : "connecting…"}
+          </span>
+          {stats && (
+            <span className="spill">
+              {stats.games} game{stats.games === 1 ? "" : "s"} on now
+            </span>
+          )}
         </div>
-        <dl className="hero-stats" aria-live="polite">
-          <div>
-            <dt>
-              <span className={`dot${connected ? " on" : ""}`} /> Online
-            </dt>
-            <dd>{stats ? stats.players : "–"}</dd>
+
+        <section className="pools" aria-label="Quick pairing">
+          {POOLS.map((p) => {
+            const active = seeking?.pool === p.id;
+            const waiting = stats?.pools[p.id] ?? 0;
+            const r = me?.ratings?.[perfOf(p)];
+            return (
+              <button key={p.id} className={`pool${active ? " active" : ""}`} onClick={() => seek(p.id)} aria-pressed={active} aria-label={`${tcLabel(p)} ${PERF_LABEL[perfOf(p)]}`}>
+                {waiting > 0 && !active && <span className="pool-bubble">{waiting}</span>}
+                <span className="pool-tc">
+                  <span className="pool-base">{clockFace(p.base)}</span>
+                  <span className="pool-inc">+{p.inc}</span>
+                </span>
+                <span className="pool-name">
+                  {active ? (
+                    <>
+                      Searching<span className="dots" /> {Math.floor((performance.now() - seeking.since) / 1000)}s
+                    </>
+                  ) : (
+                    <>
+                      {PERF_LABEL[perfOf(p)]}
+                      {me?.user && <span className="pool-rating"> · {r ? `${r.rating}${r.provisional ? "?" : ""}` : "1500?"}</span>}
+                    </>
+                  )}
+                </span>
+              </button>
+            );
+          })}
+        </section>
+
+        {error && (
+          <div className="alert" role="alert">
+            {error}
           </div>
-          <div>
-            <dt>Playing now</dt>
-            <dd>{stats ? stats.games : "–"}</dd>
-          </div>
-        </dl>
-      </section>
+        )}
 
-      <section className="pools" aria-label="Quick pairing">
-        {POOLS.map((p) => {
-          const active = seeking?.pool === p.id;
-          const waiting = stats?.pools[p.id] ?? 0;
-          const r = me?.ratings?.[perfOf(p)];
-          return (
-            <button key={p.id} className={`pool${active ? " active" : ""}`} onClick={() => seek(p.id)} aria-pressed={active} aria-label={`${tcLabel(p)} ${PERF_LABEL[perfOf(p)]}`}>
-              <span className="pool-top">
-                <span className="pool-name">{PERF_LABEL[perfOf(p)]}</span>
-                {active ? (
-                  <span className="pool-wait">{Math.floor((performance.now() - seeking.since) / 1000)}s</span>
-                ) : waiting > 0 ? (
-                  <span className="pool-wait live">{waiting} waiting</span>
-                ) : me?.user ? (
-                  <span className="pool-wait">{r ? `${r.rating}${r.provisional ? "?" : ""}` : "1500?"}</span>
-                ) : null}
-              </span>
-              <span className="pool-tc">
-                <span className="pool-base">{clockFace(p.base)}</span>
-                <span className="pool-inc">+{p.inc}</span>
-              </span>
-              <span className="pool-foot">{active ? "Searching · tap to cancel" : p.inc ? `${p.inc}s increment` : "no increment"}</span>
-              {active && <span className="pool-scan" aria-hidden="true" />}
-            </button>
-          );
-        })}
-      </section>
-
-      {error && (
-        <div className="alert" role="alert">
-          {error}
-        </div>
-      )}
-
-      <section className="actions">
-        <button className="btn" onClick={() => (me?.user ? setDialog({}) : nav("/signin?next=/"))}>
-          Challenge someone
-        </button>
-        <Link className="btn" to="/bot">
-          Play the computer
-        </Link>
-      </section>
-
-      {!me?.user && me && (
-        <div className="card cta">
-          <div>
-            <strong>Create a free account to play rated games.</strong>
-            <div className="muted">Just an email and a password. Or practise against Stockfish without one.</div>
-          </div>
-          <Link className="btn primary" to="/signup">
-            Sign up
+        <section className="actions">
+          <button className="btn blue" onClick={() => (me?.user ? setDialog({}) : nav("/signin?next=/"))}>
+            Challenge a friend
+          </button>
+          <Link className="btn purple" to="/bot">
+            Vs. the computer
           </Link>
+        </section>
+
+        {!me?.user && me && (
+          <div className="cta">
+            <span>
+              <strong>Play rated games</strong> <span className="muted">— just an email and a password.</span>
+            </span>
+            <Link className="btn primary small" to="/signup">
+              Sign up
+            </Link>
+          </div>
+        )}
+
+        <div className="menu-tabs" role="tablist">
+          {tabs.map((t) => (
+            <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>
+              {t.label}
+              {t.n > 0 && <span className="count">{t.n}</span>}
+            </button>
+          ))}
         </div>
-      )}
-
-      <div className="home-columns">
-        <section>
-          <div className="section-head">
-            <h2>Online players</h2>
-            <Link to="/players" className="small">
-              All players →
-            </Link>
-          </div>
-          {players === null ? (
-            <p className="muted small">Loading…</p>
-          ) : players.length === 0 ? (
-            <p className="muted small">Nobody signed in right now.</p>
-          ) : (
-            <OnlineList players={players} limit={8} onChallenge={(u) => setDialog({ to: u })} />
-          )}
-        </section>
-        <section>
-          <div className="section-head">
-            <h2>Open challenges</h2>
-            <Link to="/challenges" className="small">
-              My challenges →
-            </Link>
-          </div>
-          {otherOpen.length === 0 ? (
-            <p className="muted small">No open challenges. Post one with “Challenge someone” → Anyone, now or at a set time.</p>
-          ) : (
-            <div className="challenge-list">
-              {otherOpen.slice(0, 6).map((c) => (
-                <ChallengeCard key={c.id} c={c} compact />
-              ))}
-            </div>
-          )}
-        </section>
+        <div className="menu-tab-body">
+          {tab === "online" &&
+            (players === null ? (
+              <p className="empty-note">Loading…</p>
+            ) : players.length === 0 ? (
+              <p className="empty-note">Nobody signed in right now.</p>
+            ) : (
+              <>
+                <OnlineList players={players} limit={8} onChallenge={(u) => setDialog({ to: u })} />
+                <Link to="/players" className="more">
+                  All players →
+                </Link>
+              </>
+            ))}
+          {tab === "open" &&
+            (otherOpen.length === 0 ? (
+              <p className="empty-note">No open challenges. Post one with “Challenge a friend” → Anyone.</p>
+            ) : (
+              <>
+                <div className="challenge-list">
+                  {otherOpen.slice(0, 6).map((c) => (
+                    <ChallengeCard key={c.id} c={c} compact />
+                  ))}
+                </div>
+                <Link to="/challenges" className="more">
+                  My challenges →
+                </Link>
+              </>
+            ))}
+          {tab === "live" &&
+            (live.length === 0 ? (
+              <p className="empty-note">No games on right now. Start one!</p>
+            ) : (
+              <div className="live-list">
+                {live.map((g) => (
+                  <Link key={g.id} className="live-row" to={`/game/${g.id}`}>
+                    <span className="tc">{tcLabel(g)}</span>
+                    <PlayerTag name={g.white.username} rating={g.white.rating} provisional={g.white.provisional} link={false} />
+                    <span className="muted">vs</span>
+                    <PlayerTag name={g.black.username} rating={g.black.rating} provisional={g.black.provisional} link={false} />
+                    <span className="watch">Watch →</span>
+                  </Link>
+                ))}
+              </div>
+            ))}
+          {tab === "recent" &&
+            (recent.length === 0 ? (
+              <p className="empty-note">No finished games yet.</p>
+            ) : (
+              <div className="game-grid">
+                {recent.slice(0, 8).map((g) => (
+                  <GameRow key={g.id} g={g} />
+                ))}
+              </div>
+            ))}
+        </div>
       </div>
-
-      {live.length > 0 && (
-        <section>
-          <h2>Live now</h2>
-          <div className="live-list">
-            {live.map((g) => (
-              <Link key={g.id} className="live-row" to={`/game/${g.id}`}>
-                <span className="tc">{tcLabel(g)}</span>
-                <PlayerTag name={g.white.username} rating={g.white.rating} provisional={g.white.provisional} link={false} />
-                <span className="muted">vs</span>
-                <PlayerTag name={g.black.username} rating={g.black.rating} provisional={g.black.provisional} link={false} />
-                <span className="watch">Watch →</span>
-              </Link>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {recent.length > 0 && (
-        <section>
-          <h2>Recent games</h2>
-          <div className="game-grid">
-            {recent.map((g) => (
-              <GameRow key={g.id} g={g} />
-            ))}
-          </div>
-        </section>
-      )}
 
       {dialog && <ChallengeDialog to={dialog.to} onClose={() => setDialog(null)} />}
     </div>

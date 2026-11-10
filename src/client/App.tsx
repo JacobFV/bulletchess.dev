@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createBrowserRouter, Link, NavLink, Outlet, RouterProvider, useLocation, useNavigate } from "react-router";
 import { authClient } from "./lib/auth";
+import { Backdrop } from "./components/Backdrop";
 import { Toasts } from "./components/Toasts";
 import { LobbyProvider, useLobby } from "./lib/lobby";
 import { MeProvider, useMe } from "./lib/me";
@@ -47,6 +48,7 @@ function Shell() {
 
   return (
     <div className="app">
+      <Backdrop />
       <header className="topbar">
         <Link to="/" className="logo" aria-label="bulletchess home">
           <Mark />
@@ -116,8 +118,9 @@ function Shell() {
 export function Mark() {
   return (
     <svg className="mark" viewBox="0 0 32 32" aria-hidden="true">
-      <path d="M3 12h9M1 16h11M3 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" opacity=".45" />
-      <circle cx="22" cy="16" r="8" fill="currentColor" />
+      <path d="M2 11h8M0 16h9M2 21h8" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" />
+      <circle cx="21" cy="16" r="9" fill="#ffd23f" stroke="#1d1640" strokeWidth="3" />
+      <circle cx="18" cy="13" r="2.4" fill="#fff" />
     </svg>
   );
 }
